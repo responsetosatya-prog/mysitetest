@@ -12,7 +12,13 @@ app.use(express.json());
 // Database connection
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
+  ssl: {
+    rejectUnauthorized: false,
+    ca: undefined,        // Ignore certificate authority
+    key: undefined,       // Ignore client key
+    cert: undefined,      // Ignore client certificate
+    checkServerIdentity: () => undefined // Bypass server identity check
+  }
 });
 
 // Auto-create tables on startup
