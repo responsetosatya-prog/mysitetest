@@ -10,16 +10,27 @@ app.use(cors());
 app.use(express.json());
 
 // Database connection
+// ============================================
+// ✅ DEFINITIVE FIX FOR RENDER POSTGRESQL
+// ============================================
+const { Pool } = require('pg');
+
+// Create a custom SSL configuration that ignores all certificate validation
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: {
-    rejectUnauthorized: false,
-    ca: undefined,        // Ignore certificate authority
-    key: undefined,       // Ignore client key
-    cert: undefined,      // Ignore client certificate
-    checkServerIdentity: () => undefined // Bypass server identity check
+    rejectUnauthorized: false,  // Ignore certificate validation
+    // These additional settings bypass the self-signed certificate error
+    ca: '',                     // Empty CA certificate
+    checkServerIdentity: () => { return undefined; } // Bypass server identity check
   }
 });
+
+// Alternative: If the above fails, try this simpler version
+// const pool = new Pool({
+//   connectionString: process.env.DATABASE_URL,
+//   ssl: false  // Completely disable SSL (less secure but works)
+// });
 
 // Auto-create tables on startup
 const initDb = async () => {
