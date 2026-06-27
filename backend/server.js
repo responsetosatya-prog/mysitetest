@@ -1,3 +1,6 @@
+// ⚠️ CRITICAL: Bypass SSL certificate validation for Render PostgreSQL
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+
 const express = require('express');
 const cors = require('cors');
 const bcrypt = require('bcryptjs');
@@ -9,33 +12,21 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Database connection
 // ============================================
-// ✅ DEFINITIVE FIX FOR RENDER POSTGRESQL
+// ✅ FIXED DATABASE CONNECTION
 // ============================================
-const { Pool } = require('pg');
-
-// Create a custom SSL configuration that ignores all certificate validation
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: {
-    rejectUnauthorized: false,  // Ignore certificate validation
-    // These additional settings bypass the self-signed certificate error
-    ca: '',                     // Empty CA certificate
-    checkServerIdentity: () => { return undefined; } // Bypass server identity check
+    rejectUnauthorized: false,
+    ca: '',
+    checkServerIdentity: () => { return undefined; }
   }
 });
 
-// Alternative: If the above fails, try this simpler version
-// const pool = new Pool({
-//   connectionString: process.env.DATABASE_URL,
-//   ssl: false  // Completely disable SSL (less secure but works)
-// });
-
-// Auto-create tables on startup
+// Test connection and create tables
 const initDb = async () => {
   try {
-    // Test connection
     await pool.query('SELECT NOW()');
     console.log('✅ Database connected successfully');
     
@@ -51,6 +42,7 @@ const initDb = async () => {
         createdat TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
+    console.log('✅ Users table ready');
     
     // Create daily records table
     await pool.query(`
@@ -65,36 +57,28 @@ const initDb = async () => {
         UNIQUE(userid, date)
       )
     `);
+    console.log('✅ Daily records table ready');
     
-    console.log('✅ Tables created successfully');
   } catch (error) {
     console.error('❌ Database init error:', error.message);
   }
 };
 
-// Call this after database connection
 initDb();
 
-// Test database connection
-pool.connect((err) => {
-  if (err) {
-    console.log('Database connection error:', err);
-  } else {
-    console.log('Database connected successfully');
-  }
-});
+// ============================================
+// REST OF YOUR CODE
+// ============================================
 
-// ---------- MIDDLEWARE ----------
 function verifyToken(req, res, next) {
   const token = req.headers.authorization?.split(' ')[1];
   if (!token) return res.status(401).json({ error: 'No token provided' });
-  
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     req.userId = decoded.userId;
     req.isAdmin = decoded.isAdmin || false;
     next();
-  } catch (error) {
+  } catch {
     res.status(401).json({ error: 'Invalid token' });
   }
 }
@@ -104,26 +88,20 @@ function verifyAdmin(req, res, next) {
   next();
 }
 
-// ---------- AUTH ROUTES ----------
-// Signup
+// -------- SIGNUP --------
 app.post('/api/signup', async (req, res) => {
   try {
     const { name, email, password } = req.body;
-    
     if (!name || !email || !password) {
       return res.status(400).json({ error: 'All fields required' });
     }
     
-    // Check if user exists
     const existing = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
     if (existing.rows.length > 0) {
       return res.status(400).json({ error: 'Email already registered' });
     }
     
-    // Hash password
     const hashedPassword = await bcrypt.hash(password, 10);
-    
-    // Save user
     const result = await pool.query(
       'INSERT INTO users (name, email, password) VALUES ($1, $2, $3) RETURNING id, name, email, isadmin',
       [name, email, hashedPassword]
@@ -131,90 +109,63 @@ app.post('/api/signup', async (req, res) => {
     
     const user = result.rows[0];
     const token = jwt.sign(
-      { userId: user.id, isAdmin: user.isadmin }, 
+      { userId: user.id, isAdmin: user.isadmin },
       process.env.JWT_SECRET,
       { expiresIn: '7d' }
     );
     
-    res.json({ 
-      token, 
-      user: { 
-        id: user.id, 
-        name: user.name, 
-        email: user.email,
-        isAdmin: user.isadmin 
-      } 
-    });
+    res.json({ token, user: { id: user.id, name: user.name, email: user.email, isAdmin: user.isadmin } });
   } catch (error) {
-    console.error('Signup error:', error);
+    console.error('Signup error:', error.message);
     res.status(500).json({ error: 'Server error' });
   }
 });
 
-// Login
+// -------- LOGIN --------
 app.post('/api/login', async (req, res) => {
   try {
     const { email, password } = req.body;
-    
     if (!email || !password) {
       return res.status(400).json({ error: 'Email and password required' });
     }
     
-    // Find user
     const result = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
     const user = result.rows[0];
-    
     if (!user) return res.status(400).json({ error: 'User not found' });
     if (user.isblocked) return res.status(403).json({ error: 'Account is blocked' });
     
-    // Check password
     const valid = await bcrypt.compare(password, user.password);
     if (!valid) return res.status(400).json({ error: 'Invalid password' });
     
-    // Generate token
     const token = jwt.sign(
-      { userId: user.id, isAdmin: user.isadmin }, 
+      { userId: user.id, isAdmin: user.isadmin },
       process.env.JWT_SECRET,
       { expiresIn: '7d' }
     );
     
-    res.json({ 
-      token, 
-      user: { 
-        id: user.id, 
-        name: user.name, 
-        email: user.email,
-        isAdmin: user.isadmin 
-      } 
-    });
+    res.json({ token, user: { id: user.id, name: user.name, email: user.email, isAdmin: user.isadmin } });
   } catch (error) {
-    console.error('Login error:', error);
+    console.error('Login error:', error.message);
     res.status(500).json({ error: 'Server error' });
   }
 });
 
-// ---------- USER ROUTES ----------
-// Add daily record
+// -------- DAILY RECORD --------
 app.post('/api/daily-record', verifyToken, async (req, res) => {
   try {
     const { date, dailyCount, status, notes } = req.body;
     const userId = req.userId;
-    
-    // Check if record already exists for this date
     const existing = await pool.query(
       'SELECT * FROM daily_records WHERE userid = $1 AND date = $2',
       [userId, date]
     );
-    
     if (existing.rows.length > 0) {
-      // Update existing
       await pool.query(
         'UPDATE daily_records SET dailycount = $1, status = $2, notes = $3 WHERE userid = $4 AND date = $5',
         [dailyCount, status, notes, userId, date]
       );
       res.json({ message: 'Record updated!' });
     } else {
-      // Insert new
       await pool.query(
         'INSERT INTO daily_records (userid, date, dailycount, status, notes) VALUES ($1, $2, $3, $4, $5)',
         [userId, date, dailyCount, status, notes]
@@ -222,127 +173,75 @@ app.post('/api/daily-record', verifyToken, async (req, res) => {
       res.json({ message: 'Record saved!' });
     }
   } catch (error) {
-    console.error('Daily record error:', error);
+    console.error('Daily record error:', error.message);
     res.status(500).json({ error: 'Server error' });
   }
 });
 
-// Get user's monthly records
+// -------- MY RECORDS --------
 app.get('/api/my-records/:month', verifyToken, async (req, res) => {
   try {
     const userId = req.userId;
     const { month } = req.params;
-    
     const result = await pool.query(
-      `SELECT * FROM daily_records 
-       WHERE userid = $1 AND TO_CHAR(date, 'YYYY-MM') = $2 
-       ORDER BY date DESC`,
+      `SELECT * FROM daily_records WHERE userid = $1 AND TO_CHAR(date, 'YYYY-MM') = $2 ORDER BY date DESC`,
       [userId, month]
     );
-    
     res.json(result.rows);
   } catch (error) {
-    console.error('Fetch records error:', error);
+    console.error('Fetch records error:', error.message);
     res.status(500).json({ error: 'Server error' });
   }
 });
 
-// Get user's summary (total count for month)
-app.get('/api/my-summary/:month', verifyToken, async (req, res) => {
-  try {
-    const userId = req.userId;
-    const { month } = req.params;
-    
-    const result = await pool.query(
-      `SELECT 
-        COALESCE(SUM(dailycount), 0) as total,
-        COUNT(CASE WHEN status = 'present' THEN 1 END) as present,
-        COUNT(CASE WHEN status = 'absent' THEN 1 END) as absent,
-        COUNT(CASE WHEN status = 'holiday' THEN 1 END) as holiday
-       FROM daily_records 
-       WHERE userid = $1 AND TO_CHAR(date, 'YYYY-MM') = $2`,
-      [userId, month]
-    );
-    
-    res.json(result.rows[0]);
-  } catch (error) {
-    console.error('Summary error:', error);
-    res.status(500).json({ error: 'Server error' });
-  }
-});
-
-// ---------- ADMIN ROUTES ----------
-// Get all users
+// -------- ADMIN USERS --------
 app.get('/api/admin/users', verifyToken, verifyAdmin, async (req, res) => {
   try {
     const result = await pool.query(
-      `SELECT id, name, email, isblocked, createdat 
-       FROM users WHERE isadmin = false 
-       ORDER BY createdat DESC`
+      `SELECT id, name, email, isblocked, createdat FROM users WHERE isadmin = false ORDER BY createdat DESC`
     );
     res.json(result.rows);
   } catch (error) {
-    console.error('Admin users error:', error);
+    console.error('Admin users error:', error.message);
     res.status(500).json({ error: 'Server error' });
   }
 });
 
-// Get all daily records
+// -------- ADMIN ALL RECORDS --------
 app.get('/api/admin/all-records', verifyToken, verifyAdmin, async (req, res) => {
   try {
     const result = await pool.query(
       `SELECT u.name, u.email, d.date, d.dailycount, d.status, d.notes 
-       FROM daily_records d 
-       JOIN users u ON d.userid = u.id 
-       WHERE u.isadmin = false
-       ORDER BY d.date DESC`
+       FROM daily_records d JOIN users u ON d.userid = u.id 
+       WHERE u.isadmin = false ORDER BY d.date DESC`
     );
     res.json(result.rows);
   } catch (error) {
-    console.error('Admin records error:', error);
+    console.error('Admin records error:', error.message);
     res.status(500).json({ error: 'Server error' });
   }
 });
 
-// Get records for a specific user (admin)
-app.get('/api/admin/user-records/:userId', verifyToken, verifyAdmin, async (req, res) => {
-  try {
-    const { userId } = req.params;
-    const result = await pool.query(
-      `SELECT * FROM daily_records WHERE userid = $1 ORDER BY date DESC`,
-      [userId]
-    );
-    res.json(result.rows);
-  } catch (error) {
-    console.error('Admin user records error:', error);
-    res.status(500).json({ error: 'Server error' });
-  }
-});
-
-// Block/Unblock user
+// -------- BLOCK USER --------
 app.put('/api/admin/block-user/:userId', verifyToken, verifyAdmin, async (req, res) => {
   try {
     const { userId } = req.params;
     const { block } = req.body;
-    
     await pool.query('UPDATE users SET isblocked = $1 WHERE id = $2', [block, userId]);
     res.json({ message: `User ${block ? 'blocked' : 'unblocked'}` });
   } catch (error) {
-    console.error('Block user error:', error);
+    console.error('Block user error:', error.message);
     res.status(500).json({ error: 'Server error' });
   }
 });
 
-// ---------- CREATE ADMIN (One-time use) ----------
+// -------- CREATE ADMIN --------
 app.post('/api/create-admin', async (req, res) => {
   try {
     const { name, email, password, secretKey } = req.body;
-    
-    // Change this to your own secret key!
     if (secretKey !== 'MY_SECRET_ADMIN_KEY_123') {
       return res.status(403).json({ error: 'Invalid secret key' });
     }
-    
     const hashedPassword = await bcrypt.hash(password, 10);
     await pool.query(
       'INSERT INTO users (name, email, password, isadmin) VALUES ($1, $2, $3, true)',
@@ -350,13 +249,13 @@ app.post('/api/create-admin', async (req, res) => {
     );
     res.json({ message: 'Admin created successfully!' });
   } catch (error) {
-    console.error('Create admin error:', error);
+    console.error('Create admin error:', error.message);
     res.status(500).json({ error: 'Server error' });
   }
 });
 
-// ---------- START SERVER ----------
+// -------- START SERVER --------
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`🚀 Server running on port ${PORT}`);
 });
