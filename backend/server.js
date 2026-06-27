@@ -18,6 +18,49 @@ const pool = new Pool({
   }
 });
 
+// Auto-create tables on startup
+const initDb = async () => {
+  try {
+    // Test connection
+    await pool.query('SELECT NOW()');
+    console.log('✅ Database connected successfully');
+    
+    // Create users table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(100) NOT NULL,
+        email VARCHAR(100) UNIQUE NOT NULL,
+        password VARCHAR(255) NOT NULL,
+        isadmin BOOLEAN DEFAULT false,
+        isblocked BOOLEAN DEFAULT false,
+        createdat TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    
+    // Create daily records table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS daily_records (
+        id SERIAL PRIMARY KEY,
+        userid INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        date DATE DEFAULT CURRENT_DATE,
+        dailycount INTEGER DEFAULT 0,
+        status VARCHAR(20) DEFAULT 'present',
+        notes TEXT,
+        createdat TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(userid, date)
+      )
+    `);
+    
+    console.log('✅ Tables created successfully');
+  } catch (error) {
+    console.error('❌ Database init error:', error.message);
+  }
+};
+
+// Call this after database connection
+initDb();
+
 // Test database connection
 pool.connect((err) => {
   if (err) {
